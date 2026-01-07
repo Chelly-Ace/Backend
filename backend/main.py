@@ -9,11 +9,18 @@ from print_logs import print_sensor_log
 from fastapi.middleware.cors import CORSMiddleware
 
 
+
+
 app = FastAPI()
+
+
+origins = [
+    "http://localhost:5173",  
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],   
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -21,6 +28,15 @@ app.add_middleware(
 
 last_registered_user = {"user_id": None, "username": None}
 latest_sensor_payload = None
+
+def safe_int(value, default=0):
+    if value is None:
+        return default
+    try:
+        return int(float(value))  # converts decimal, string, float safely
+    except (ValueError, TypeError):
+        return default
+
 
     
 def get_or_create_user(username: str):
@@ -234,19 +250,23 @@ def get_user_list():
     
 @app.get("/history")
 def get_history():
-
     try: 
         with get_connection_cursor(dictionary=True) as cursor: 
-            ## User id
-            cursor.execute("SELECT id, username FROM users ORDER BY username ASC" )
+            # Fetch all users
+            cursor.execute("SELECT id, username FROM users ORDER BY username ASC")
             users = cursor.fetchall()
-             
+            
+                
             all_users_history = []
 
             for user in users:
-                user_id = user["id"]
-                username = user["username"]
+                user_id = user.get("id")
+                username = user.get("username")
 
+                if not user_id:
+                    continue  # skip invalid users
+
+                # Fetch latest reading
                 cursor.execute(
                     """
                     SELECT id, recorded_at, heart_rate, predicted_activity, stud_condition
@@ -258,9 +278,9 @@ def get_history():
                     (user_id,)
                 )
                 latest_reading = cursor.fetchone()
+                
 
-
-                ##latest summary
+                # Fetch latest summary
                 cursor.execute("""
                     SELECT avg_heart_rate, min_heart_rate, max_heart_rate, total_readings
                     FROM heart_rate_summary
@@ -269,59 +289,52 @@ def get_history():
                     LIMIT 1
                 """, (user_id,))
                 summary = cursor.fetchone()
+                
 
-                ##full history
-                # 4. Full history list (no timestamps removed here)
-                cursor.execute("""
-                    SELECT id, recorded_at, heart_rate, predicted_activity, stud_condition
-                    FROM heart_rate_motion_readings
-                    WHERE user_id=%s
-                    ORDER BY recorded_at DESC
-                    LIMIT 10
-                """, (user_id,))
-                history = cursor.fetchall()
-
-                # -------- MERGED BLOCK for card display --------
                 merged_latest = None
                 if latest_reading:
                     merged_latest = {
-                        "heartRate": latest_reading["heart_rate"],
-                        "activity": latest_reading["predicted_activity"],
-                        "anomaly": latest_reading["stud_condition"],
-                        "avgBpm": summary["avg_heart_rate"] if summary else None,
-                        "minBpm": summary["min_heart_rate"] if summary else None,
-                        "maxBpm": summary["max_heart_rate"] if summary else None,
-                        "totalReadings": summary["total_readings"] if summary else None
+                        "heartRate": safe_int(latest_reading.get("heart_rate")),
+                        "activity": latest_reading.get("predicted_activity") or "Unknown",
+                        "anomaly": latest_reading.get("stud_condition") or "Normal",
+                        "avgBpm": safe_int(summary.get("avg_heart_rate")) if summary else 0,
+                        "minBpm": safe_int(summary.get("min_heart_rate")) if summary else 0,
+                        "maxBpm": safe_int(summary.get("max_heart_rate")) if summary else 0,
+                        "totalReadings": safe_int(summary.get("total_readings")) if summary else 0
                     }
 
-                    # -------- HISTORY LIST --------
-                history_list = [
-                    {
-                        "id": row["id"],
-                        "timestamp": row["recorded_at"],
-                        "heartRate": row["heart_rate"],
-                        "activity": row["predicted_activity"],
-                        "anomaly": row["stud_condition"]
-                    }
-                    for row in history
-                ]
+                    # Fetch last 10 readings
+                    cursor.execute("""
+                        SELECT id, recorded_at, heart_rate, predicted_activity, stud_condition
+                        FROM heart_rate_motion_readings
+                        WHERE user_id=%s
+                        ORDER BY recorded_at DESC
+                        LIMIT 10
+                    """, (user_id,))
+                    history = cursor.fetchall() or []
+                    
 
-                all_users_history.append({
+                    history_list = [
+                        {
+                            "id": row.get("id"),
+                            "timestamp": row.get("recorded_at"),
+                            "heartRate": safe_int(row.get("heart_rate")),
+                            "activity": row.get("predicted_activity", "Unknown"),
+                            "anomaly": row.get("stud_condition", "Normal")
+                        }
+                        for row in history
+                    ]
+
+                    all_users_history.append({
                         "username": username,
                         "latest": merged_latest,
                         "history": history_list
                     })
 
-            return {
-                "status": "success",
-                "data": all_users_history
-            }
+        return {
+            "status": "success",
+            "data": all_users_history
+        }
 
-
-
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-
-
-
+    except Exception as e:  
+     return {"status": "error", "message": str(e)}
