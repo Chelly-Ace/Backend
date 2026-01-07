@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request, Form
 from database import get_connection_cursor
 from datetime import datetime, timedelta, timezone
 import mysql.connector
-from ml_models import rf_model, scaler, predict_activity, predict_condition
+from ml_predict import predict_activity, predict_condition
 from sensors_data import load_sensor_data, validate_vital_signs
 from compute_and_push import summary_compute, push_summary_db
 from print_logs import print_sensor_log
